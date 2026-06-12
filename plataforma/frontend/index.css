@@ -1,0 +1,52 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Paleta Floresta Noturna — geral */
+  --bg:           #0F1F1A;
+  --surface:      #1A3329;
+  --surface2:     #1F3D30;
+  --primary:      #1D9E75;
+  --primary-dark: #0F6E56;
+  --gold:         #EF9F27;
+  --gold-dark:    #BA7517;
+  --text:         #E8F5F0;
+  --text-muted:   #9FC9B8;
+  --text-faint:   #5A8A78;
+  --border:       rgba(255,255,255,0.08);
+  --border-mid:   rgba(255,255,255,0.14);
+  --danger:       #E24B4A;
+  --danger-bg:    rgba(226,75,74,0.15);
+
+  /* Paleta Verde Creme — popups/interações */
+  --popup-bg:      #F7F5EF;
+  --popup-surface: #E8F5F0;
+  --popup-text:    #1A2E26;
+  --popup-muted:   #6B8C7E;
+  --popup-border:  #C8DDD6;
+  --popup-gold:    #B8860B;
+
+  /* Layout */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+input, select, textarea, button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--text-faint); border-radius: 3px; }
