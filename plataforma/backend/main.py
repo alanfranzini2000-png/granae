@@ -1,6 +1,7 @@
 import os
 import io
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import json
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -9,7 +10,7 @@ from datetime import datetime
 
 from database import init_db, get_conn, atualizar_status_base
 from categorizer import categorizar, limpar_desc, eh_fatura, eh_imune_viagem
-from parser import processar_pdf
+from parser import processar_pdf, pdf_esta_encriptado
 
 app = FastAPI(title="Finanças Pessoais API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -44,16 +45,17 @@ class NovaRegra(BaseModel):
 
 # ── HELPERS ───────────────────────────────────────────────────────────────
 
-def _processar_arquivo(conteudo, nome_arquivo, conn, upload_id):
-    tipo, lancamentos_raw = processar_pdf(conteudo, nome_arquivo)
+def _processar_arquivo(conteudo, nome_arquivo, conn, upload_id, senha=None):
+    tipo, lancamentos_raw = processar_pdf(conteudo, nome_arquivo, senha)
     staging = []
     for l in lancamentos_raw:
+        # is_pix lê a descrição BRUTA (antes de limpar_desc remover o prefixo)
+        is_pix = 'PIX ENVIADO' in l['descricao'].upper() or 'PIX RECEBIDO' in l['descricao'].upper()
         desc = limpar_desc(l['descricao'])
         if tipo == 'debito' and eh_fatura(desc):
             continue
         valor = l['valor']
-        is_pix = 'PIX ENVIADO' in l['descricao'].upper() or 'PIX RECEBIDO' in l['descricao'].upper()
-        cat, confianca = categorizar(desc, valor, l['tipo'], usar_ia=False, is_pix=is_pix)
+        cat, confianca, fonte = categorizar(desc, valor, l['tipo'], usar_ia=True, is_pix=is_pix)
         credito = valor if valor > 0 else None
         debito  = abs(valor) if valor < 0 else None
 
@@ -65,11 +67,11 @@ def _processar_arquivo(conteudo, nome_arquivo, conn, upload_id):
         cur = conn.execute("""
             INSERT INTO staging
               (upload_id, mes, data, descricao, credito, debito, valor,
-               categoria, tipo, fonte, duplicata)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               categoria, tipo, fonte, confianca, duplicata)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """, (upload_id, l['mes'], l['data'], desc,
               credito, debito, valor,
-              cat, l['tipo'], confianca or 'vermelho', 1 if dup > 0 else 0))
+              cat, l['tipo'], fonte or 'desconhecido', confianca or 'vermelho', 1 if dup > 0 else 0))
 
         staging.append({
             'id':        cur.lastrowid,
@@ -80,6 +82,7 @@ def _processar_arquivo(conteudo, nome_arquivo, conn, upload_id):
             'categoria': cat,
             'tipo':      l['tipo'],
             'confianca': confianca or 'vermelho',
+            'fonte':     fonte or 'desconhecido',
             'duplicata': dup > 0,
             'arquivo':   tipo,
         })
@@ -89,29 +92,52 @@ def _processar_arquivo(conteudo, nome_arquivo, conn, upload_id):
 # ── UPLOAD → STAGING (múltiplos arquivos) ─────────────────────────────────
 
 @app.post("/upload")
-async def upload_arquivos(files: List[UploadFile] = File(...)):
+async def upload_arquivos(
+    files: List[UploadFile] = File(...),
+    senhas: str = Form(default="{}")
+):
     """
     Aceita 1 ou mais PDFs. Detecta tipo automaticamente para cada um.
     Duplicatas são removidas dos itens retornados mas contabilizadas.
+    PDFs com senha: retorna arquivos_com_senha para o frontend pedir a senha.
     """
+    try:
+        senhas_dict = json.loads(senhas)
+    except Exception:
+        senhas_dict = {}
+
+    # Lê todos os arquivos primeiro para poder verificar criptografia
+    arquivos_dados = []
+    for file in files:
+        conteudo = await file.read()
+        arquivos_dados.append((file.filename, conteudo))
+
+    # Verifica quais PDFs estão protegidos e sem senha fornecida
+    precisam_senha = [
+        nome for nome, conteudo in arquivos_dados
+        if pdf_esta_encriptado(conteudo) and nome not in senhas_dict
+    ]
+    if precisam_senha:
+        return {"arquivos_com_senha": precisam_senha}
+
     conn = get_conn()
 
     cur = conn.execute("""
         INSERT INTO uploads (tipo, nome_arquivo, periodo_inicio, periodo_fim, total_lancamentos, incorporado)
         VALUES (?,?,?,?,?,0)
-    """, ('multiplo', ' + '.join(f.filename for f in files), None, None, 0))
+    """, ('multiplo', ' + '.join(n for n, _ in arquivos_dados), None, None, 0))
     upload_id = cur.lastrowid
 
     todos_staging = []
     erros = []
 
-    for file in files:
-        conteudo = await file.read()
+    for nome, conteudo in arquivos_dados:
+        senha = senhas_dict.get(nome)
         try:
-            tipo, staging = _processar_arquivo(conteudo, file.filename, conn, upload_id)
+            tipo, staging = _processar_arquivo(conteudo, nome, conn, upload_id, senha)
             todos_staging.extend(staging)
         except Exception as e:
-            erros.append(f"{file.filename}: {str(e)}")
+            erros.append(f"{nome}: {str(e)}")
 
     # Separar duplicatas dos itens a mostrar
     itens_limpos    = [s for s in todos_staging if not s['duplicata']]
@@ -162,11 +188,11 @@ async def incorporar(body: IncorporarBody):
         conn.execute("""
             INSERT INTO lancamentos
               (mes, data, descricao, credito, debito, valor,
-               categoria, tipo, revisado, origem, fonte)
-            VALUES (?,?,?,?,?,?,?,?,1,'upload',?)
+               categoria, tipo, revisado, origem, fonte, confianca)
+            VALUES (?,?,?,?,?,?,?,?,1,'upload',?,?)
         """, (row['mes'], row['data'], row['descricao'],
               row['credito'], row['debito'], row['valor'],
-              item.categoria, row['tipo'], row['fonte']))
+              item.categoria, row['tipo'], row['fonte'], row['confianca']))
         tipos_incorporados.add(row['tipo'])
         incorporados += 1
 

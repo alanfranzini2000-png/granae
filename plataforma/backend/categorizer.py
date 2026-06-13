@@ -186,7 +186,10 @@ Responda APENAS com JSON sem markdown:
 
 def categorizar(descricao, valor=0, tipo="Débito", usar_ia=True, is_pix=False):
     """
-    Retorna (categoria, confianca) onde confianca é 'verde', 'amarelo' ou 'vermelho'.
+    Retorna (categoria, confianca, fonte).
+
+    confianca: 'verde' | 'amarelo' | 'vermelho'
+    fonte:     'regra' | 'ia' | 'pix' | None
 
     verde   → regra fixa ou IA com alta confiança
     amarelo → IA com média confiança, ou PIX de valor pequeno (≤ R$100) sem regra
@@ -196,28 +199,28 @@ def categorizar(descricao, valor=0, tipo="Débito", usar_ia=True, is_pix=False):
     cat, status = categorizar_por_regra(descricao)
 
     if status == 'regra':
-        return cat, 'verde'
+        return cat, 'verde', 'regra'
 
     if status == 'perguntar':
-        return None, 'vermelho'
+        return None, 'vermelho', None
 
     # 2. Tentar IA se habilitada
     if usar_ia and ANTHROPIC_API_KEY:
         cat_ia, confianca = categorizar_por_ia(descricao, valor, tipo)
         if cat_ia and confianca == 'alta':
-            return cat_ia, 'verde'
+            return cat_ia, 'verde', 'ia'
         elif cat_ia and confianca == 'media':
-            return cat_ia, 'amarelo'
+            return cat_ia, 'amarelo', 'ia'
 
     # 3. PIX sem regra e sem IA conclusiva
     if is_pix:
         if abs(valor) <= PIX_VALOR_PEQUENO:
-            return 'L', 'amarelo'
+            return 'L', 'amarelo', 'pix'
         else:
-            return 'L', 'vermelho'
+            return 'L', 'vermelho', 'pix'
 
     # 4. Sem categoria
-    return None, 'vermelho'
+    return None, 'vermelho', None
 
 
 # ── UTILITÁRIOS ───────────────────────────────────────────────────────────

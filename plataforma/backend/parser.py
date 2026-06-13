@@ -12,36 +12,56 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # ── EXTRAÇÃO DE TEXTO ─────────────────────────────────────────────────────
 
-def extrair_texto_pdf(pdf_bytes):
+def pdf_esta_encriptado(pdf_bytes):
+    """Retorna True se o PDF estiver protegido por senha."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            _ = len(pdf.pages)
+            return False
+    except Exception as e:
+        tipo = type(e).__name__
+        msg = str(e).lower()
+        if tipo in ('PDFPasswordIncorrect', 'PDFEncryptionError') or \
+           any(k in msg for k in ('password', 'encrypt', 'incorrect', 'decrypt')):
+            return True
+        return False
+
+
+def extrair_texto_pdf(pdf_bytes, senha=None):
     """
     Extrai texto do PDF usando pdftotext -layout (poppler-utils).
     Preserva posicionamento espacial das colunas.
     Fallback para pdfplumber se pdftotext não estiver disponível.
     """
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        result = subprocess.run(
-            ['pdftotext', '-layout', tmp_path, '-'],
-            capture_output=True, text=True, timeout=30
-        )
-        os.unlink(tmp_path)
+        cmd = ['pdftotext', '-layout']
+        if senha:
+            cmd += ['-upw', senha]
+        cmd += [tmp_path, '-']
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
 
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
         pass
-    except Exception:
-        pass
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
     # Fallback: pdfplumber
     try:
         import pdfplumber
         texto = ""
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        open_kwargs = {'password': senha} if senha else {}
+        with pdfplumber.open(io.BytesIO(pdf_bytes), **open_kwargs) as pdf:
             for page in pdf.pages:
                 texto += (page.extract_text() or "") + "\n"
         return texto
@@ -163,12 +183,7 @@ def parse_extrato_debito(texto):
 
         valor = float(valor_str.replace('.', '').replace(',', '.'))
 
-        # Limpar prefixos padrão da descrição
-        desc = desc_raw
-        desc = re.sub(r'^COMPRA CARTAO DEB MC \d{2}/\d{2}\s+', '', desc, flags=re.IGNORECASE)
-        desc = re.sub(r'^PIX (ENVIADO|RECEBIDO)\s+', '', desc, flags=re.IGNORECASE)
-        desc = re.sub(r'^PAGAMENTO DE BOLETO\s+', 'BOLETO ', desc, flags=re.IGNORECASE)
-        desc = re.sub(r'\s+\d{6,}\s*$', '', desc).strip()
+        desc = desc_raw.strip()
 
         if not desc:
             continue
@@ -297,12 +312,12 @@ def _parse_trecho_credito(trecho, ano_fatura, ignorar_desc):
 
 # ── ENTRADA PRINCIPAL ─────────────────────────────────────────────────────
 
-def processar_pdf(pdf_bytes, nome_arquivo=""):
+def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
     """
     Função principal chamada pelo main.py.
     Retorna (tipo, lancamentos) onde tipo é 'debito' ou 'credito'.
     """
-    texto = extrair_texto_pdf(pdf_bytes)
+    texto = extrair_texto_pdf(pdf_bytes, senha)
     layout = detectar_layout(texto)
 
     if not layout:

@@ -29,6 +29,7 @@ def init_db():
         revisado   INTEGER DEFAULT 1,
         origem     TEXT    DEFAULT 'upload',
         fonte      TEXT    DEFAULT 'regra',
+        confianca  TEXT,
         created_at TEXT    DEFAULT (datetime('now'))
     );
 
@@ -45,6 +46,7 @@ def init_db():
         categoria  TEXT,
         tipo       TEXT    NOT NULL,
         fonte      TEXT,
+        confianca  TEXT,
         duplicata  INTEGER DEFAULT 0,
         created_at TEXT    DEFAULT (datetime('now'))
     );
@@ -78,9 +80,23 @@ def init_db():
         ultima_atualizacao   TEXT
     );
 
+    -- Regras de categorização definidas pelo usuário
+    CREATE TABLE IF NOT EXISTS regras_categorias (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        palavra_chave TEXT NOT NULL UNIQUE,
+        categoria   TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now'))
+    );
+
     -- Garantir que existe sempre uma linha no status_base
     INSERT OR IGNORE INTO status_base (id) VALUES (1);
     """)
+
+    for tbl in ('lancamentos', 'staging'):
+        try:
+            c.execute(f"ALTER TABLE {tbl} ADD COLUMN confianca TEXT")
+        except Exception:
+            pass
 
     conn.commit()
     conn.close()
@@ -93,8 +109,12 @@ def atualizar_status_base(conn, tipo):
     """
     if tipo == 'debito':
         row = conn.execute("""
-            SELECT MAX(data) as ultima FROM lancamentos
+            SELECT data as ultima FROM lancamentos
             WHERE tipo = 'Débito' AND origem = 'upload'
+            ORDER BY SUBSTR(data,7,4) DESC,
+                     SUBSTR(data,4,2) DESC,
+                     SUBSTR(data,1,2) DESC
+            LIMIT 1
         """).fetchone()
         if row and row['ultima']:
             conn.execute("""
@@ -106,8 +126,12 @@ def atualizar_status_base(conn, tipo):
 
     elif tipo == 'credito':
         row = conn.execute("""
-            SELECT MAX(data) as ultima FROM lancamentos
+            SELECT data as ultima FROM lancamentos
             WHERE tipo = 'Crédito' AND origem = 'upload'
+            ORDER BY SUBSTR(data,7,4) DESC,
+                     SUBSTR(data,4,2) DESC,
+                     SUBSTR(data,1,2) DESC
+            LIMIT 1
         """).fetchone()
         if row and row['ultima']:
             conn.execute("""
