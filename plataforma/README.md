@@ -1,41 +1,52 @@
-# Finanças Pessoais
+# Documentacao de `plataforma`
 
-## Como rodar localmente
-
-### 1. Backend
-cd backend
-pip install -r requirements.txt
-python -m uvicorn main:app --reload --port 8000
-
-### 2. Frontend
-cd frontend
-npm install
-npm run dev
-
-### Acessar
-Frontend: http://localhost:5173
-API:      http://localhost:8000/docs
+Este e o diretorio do app principal. Ele contem o backend, o frontend e scripts de inicializacao.
 
 ## Estrutura
-backend/
-  main.py          — API FastAPI
-  database.py      — SQLite + regras de categorização
-  categorizer.py   — lógica de catalogação automática
-  parser.py        — leitura de PDFs (fatura e extrato)
-  requirements.txt
 
-frontend/
-  src/
-    App.jsx              — navegação entre abas
-    pages/Upload.jsx     — upload de arquivos
-    pages/Revisao.jsx    — revisão de lançamentos
-    pages/Dashboard.jsx  — gráficos e insights
-    components/
-      StatusBar.jsx      — status débito/crédito
-      CardMetrica.jsx    — card de métrica reutilizável
+- `main.py`: inicializador Windows/Python que sobe backend e frontend juntos.
+- `start.sh`: inicializador shell para ambientes Unix-like.
+- `README.md`: instrucoes antigas de uso e estrutura.
+- `backend/`: API FastAPI, banco SQLite, parser de PDF e regras de categorizacao.
+- `frontend/`: app React + Vite.
 
-## Regras financeiras
-- Receita = SA
-- Despesas = tudo exceto SA, I e F
-- Investimentos = I (separado, não entra no superávit)
-- F (fatura do cartão) = sempre ignorado nos cálculos
+## Inicializacao integrada
+
+`main.py` define:
+
+- `ROOT`: pasta `plataforma`;
+- `BACKEND_DIR`: `plataforma/backend`;
+- `FRONTEND_DIR`: `plataforma/frontend`.
+
+Ele procura `backend/.venv312/Scripts/python.exe`; se existir, usa esse Python para o backend. Caso contrario usa o Python atual. Para o frontend, procura `npm.cmd` ou `npm` no `PATH`.
+
+Processos iniciados:
+
+- backend: `python -m uvicorn main:app --reload --port 8000`, rodando dentro de `backend/`;
+- frontend: `npm run dev -- --host 127.0.0.1`, rodando dentro de `frontend/`.
+
+O script faz streaming dos logs prefixando linhas com `[backend]` e `[frontend]`. Ao pressionar `Ctrl+C`, encerra os subprocessos.
+
+## Fluxo funcional
+
+1. Usuario acessa o frontend.
+2. Aba Upload envia um ou mais PDFs para `POST /upload`.
+3. Backend detecta tipo de cada PDF, extrai lancamentos, categoriza e grava em `staging`.
+4. Frontend abre Revisao com os itens retornados.
+5. Usuario corrige categorias, exclui itens se necessario e informa/pula viagem.
+6. Frontend chama `POST /incorporar`.
+7. Backend move itens validos de `staging` para `lancamentos`.
+8. Dashboard consulta `/dashboard`, `/viagens`, `/status`, `/verificar` e `/exportar`.
+
+## Contratos importantes
+
+- Backend esperado em `http://127.0.0.1:8000`.
+- Frontend esperado em `http://127.0.0.1:5173`.
+- Banco principal: `backend/financas.db`.
+- A API habilita CORS amplo (`allow_origins=["*"]`) para uso local.
+
+## Cuidados ao alterar
+
+- Se mudar a porta do backend, atualizar os `const API` no frontend.
+- Se mudar nomes/codigos de categoria, atualizar backend, Revisao, Dashboard e verificacao de base juntos.
+- `start.sh` instala dependencias sempre que roda; `main.py` nao instala, apenas inicia.
