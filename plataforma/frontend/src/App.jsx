@@ -2,11 +2,12 @@ import { useState, useEffect } from "react"
 import Upload from "./pages/Upload"
 import Revisao from "./pages/Revisao"
 import Dashboard from "./pages/Dashboard"
+import Lancamentos from "./pages/Lancamentos"
 import StatusBar from "./components/StatusBar"
 import GogoManager from "./components/Gogo"
 
 const API = "http://127.0.0.1:8000"
-const TABS = ["Upload", "Revisão", "Dashboard"]
+const TABS = ["Upload", "Revisão", "Dashboard", "Lançamentos"]
 
 export default function App() {
   const [tab, setTab] = useState("Dashboard")
@@ -80,9 +81,10 @@ export default function App() {
 
       {/* CONTENT */}
       <div style={{ flex:1, padding:"1.5rem", maxWidth:1140, margin:"0 auto", width:"100%" }}>
-        {tab==="Upload"    && <Upload onUploadSuccess={handleUploadSuccess} />}
-        {tab==="Revisão"   && <Revisao uploadData={uploadData} onIncorporado={handleIncorporado} />}
-        {tab==="Dashboard" && <Dashboard />}
+        {tab==="Upload"       && <Upload onUploadSuccess={handleUploadSuccess} />}
+        {tab==="Revisão"      && <Revisao uploadData={uploadData} onIncorporado={handleIncorporado} />}
+        {tab==="Dashboard"    && <Dashboard />}
+        {tab==="Lançamentos"  && <Lancamentos />}
       </div>
     </div>
   )

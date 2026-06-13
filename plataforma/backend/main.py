@@ -352,6 +352,13 @@ def atualizar_lancamento(lid: int, body: AtualizarLancamento):
     conn.commit(); conn.close()
     return {"ok": True}
 
+@app.delete("/lancamentos/{lid}")
+def excluir_lancamento(lid: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM lancamentos WHERE id=?", (lid,))
+    conn.commit(); conn.close()
+    return {"ok": True}
+
 
 # ── VIAGENS ───────────────────────────────────────────────────────────────
 
