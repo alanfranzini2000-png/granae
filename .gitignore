@@ -16,3 +16,12 @@ build/
 
 .DS_Store
 Thumbs.db
+
+# Ambiente virtual Python (não versionar — pesado, recriável)
+.venv*/
+venv/
+
+# Bases de dados por perfil (dados do usuário) e backups locais
+*.db
+data/
+backups/
