@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import urllib.request
+import urllib.error
 from datetime import datetime
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -162,7 +163,8 @@ _CATALOGO_BANCOS = {
         'extracao': 'ia_texto', 'pdf_tipo': 'texto', 'tipo_lancamento': 'credito',
     },
     'xp': {
-        'detectar': ['BANCO XP', 'XP VISA', 'CARTÃO XP', 'CARTAO XP', 'XP INVESTIMENTOS'],
+        'detectar': ['BANCO XP', 'XP VISA', 'CARTÃO XP', 'CARTAO XP', 'XP INVESTIMENTOS',
+                     'VISA INFINITE ONE', 'INVESTBACK', 'APP XP', 'CARTÃO XP', 'SEU CARTAO XP'],
         'extracao': 'ocr_regex', 'pdf_tipo': 'imagem', 'tipo_lancamento': 'credito',
     },
 }
@@ -170,8 +172,10 @@ _CATALOGO_BANCOS = {
 
 def _detectar_banco(texto):
     """Retorna a chave do banco no catálogo cujas palavras-chave aparecem no
-    cabeçalho; None se nenhuma casar (→ IA genérica)."""
-    t = (texto or "")[:3000].upper()
+    texto; None se nenhuma casar (→ IA genérica). Varre um trecho generoso
+    porque em PDF-imagem (OCR) o cabeçalho às vezes sai ruim e o nome do banco
+    só aparece nas páginas internas."""
+    t = (texto or "")[:8000].upper()
     for banco, cfg in _CATALOGO_BANCOS.items():
         if any(kw.upper() in t for kw in cfg['detectar']):
             return banco
@@ -438,10 +442,15 @@ def extrair_lancamentos_ia(texto, ano_ref=None):
         f"anterior ao período da fatura.\n\n"
     ) if ano else ""
     conteudo = prefixo + texto[:_MAX_CHARS_IA]
+    # Sanitiza caracteres de CONTROLE (mantém \t \n \r). O OCR (Tesseract) às vezes
+    # emite bytes de controle/NUL que a API rejeita com HTTP 400.
+    conteudo = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', ' ', conteudo)
+    if not conteudo.strip():
+        raise RuntimeError("texto vazio após extração/OCR — nada para enviar à IA")
 
     payload = json.dumps({
         "model": "claude-sonnet-4-6",
-        "max_tokens": 32000,   # margem p/ faturas grandes (evita truncar o fim)
+        "max_tokens": 16000,
         "system": _SYSTEM_EXTRACAO,          # lista com cache_control
         "messages": [{"role": "user", "content": conteudo}],
     }).encode("utf-8")
@@ -457,8 +466,16 @@ def extrair_lancamentos_ia(texto, ano_ref=None):
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Surfaca a mensagem REAL da API (o "400 Bad Request" cru não diz a causa)
+        try:
+            corpo = e.read().decode("utf-8", "replace")[:600]
+        except Exception:
+            corpo = ""
+        raise RuntimeError(f"API {e.code}: {corpo or e.reason}")
 
     texto_resp = re.sub(r'```json|```', '', data['content'][0]['text']).strip()
     # A IA às vezes escreve texto explicativo antes/depois do JSON — extrai o
@@ -892,8 +909,10 @@ def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
     """
     # ── Passo 1: extrai texto; se vier vazio é PDF-imagem → OCR ───────────
     texto = extrair_texto_pdf(pdf_bytes, senha)
+    via_ocr = False
     if not texto or len(texto.strip()) < 40:
         texto = _extrair_texto_ocr(pdf_bytes, senha)   # erro acionável se faltar OCR
+        via_ocr = True
 
     # ── Passo 2: detecta o banco/layout pelo cabeçalho (grátis) ───────────
     banco = _detectar_banco(texto)
@@ -912,12 +931,14 @@ def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
             if lancs_regex:
                 return 'debito', lancs_regex
 
-    # ── Passo 3b: XP (PDF-imagem) → parser dedicado pós-OCR ───────────────
-    if banco == 'xp':
+    # ── Passo 3b: XP / qualquer fatura-imagem → parser dedicado pós-OCR ────
+    # Em PDF-imagem (via OCR) tentamos o parser XP mesmo SEM detectar o banco: o
+    # cabeçalho costuma sair ruim no OCR (logo XP é imagem), mas o corpo
+    # (DD/MM/YY ... valor) casa. Se não casar nada, cai para a IA.
+    if banco == 'xp' or via_ocr:
         lancs_xp = parse_fatura_xp(texto)
         if lancs_xp:
             return 'credito', lancs_xp
-        # senão, cai para a IA abaixo (ela tolera melhor o ruído do OCR)
 
     # ── Passo 3c: todo o resto → pré-filtro de janela + IA ────────────────
     if ANTHROPIC_API_KEY:
