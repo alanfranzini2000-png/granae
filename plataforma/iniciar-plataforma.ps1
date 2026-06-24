@@ -22,7 +22,7 @@ if (Porta-Ativa 8000) {
     Write-Host '  - Backend ja estava rodando (porta 8000).'
 } else {
     $b = Start-Process -PassThru -WindowStyle Minimized -FilePath $venvPy `
-        -ArgumentList '-m', 'uvicorn', 'main:app', '--port', '8000', '--reload' `
+        -ArgumentList '-m', 'uvicorn', 'main:app', '--port', '8000' `
         -WorkingDirectory (Join-Path $base 'backend')
     if ($b) { $novosPids += $b.Id }
     Write-Host '  - Backend iniciado (porta 8000).' -ForegroundColor Green

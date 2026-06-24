@@ -11,8 +11,11 @@ if [ ! -f "$PY" ]; then
   exit 1
 fi
 
-echo "Iniciando backend (uvicorn --reload)..."
-( cd backend && "../$PY" -m uvicorn main:app --reload --port 8000 ) &
+# Sem --reload: o file-watcher do reload não funciona em pasta do OneDrive e
+# ainda deixa processos-fantasma segurando a porta. Após mudar o backend,
+# reinicie (Fechar → Abrir Plataforma).
+echo "Iniciando backend (uvicorn)..."
+( cd backend && "../$PY" -m uvicorn main:app --port 8000 ) &
 BACK_PID=$!
 
 echo "Iniciando frontend (vite)..."
