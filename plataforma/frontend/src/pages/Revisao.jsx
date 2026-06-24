@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
+import { AliasModal } from "../components/TabelaLancamentos"
 
 const API = "http://127.0.0.1:8000"
 const CATS = ["SA","I","F","CA","S","E","A","T","M","C","B","R","L","O"]
@@ -115,57 +116,56 @@ function PopupCategorias({ itens, onSalvar }) {
   )
 }
 
-// ── POPUP VIAGEM ───────────────────────────────────────────────────────────
-function PopupViagem({ onSalvar, onPular }) {
-  const [v, setV] = useState({ destino:"", inicio:"", fim:"" })
-  const pronto = v.destino && v.inicio && v.fim
-  return (
-    <Popup titulo="Houve viagem nesse período?" sub="Se sim, informe o destino e as datas" podeFechar={false}>
-      <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-        <input placeholder="Destino (ex: Ubatuba)" value={v.destino}
-          onChange={e => setV(x => ({...x,destino:e.target.value}))}
-          style={{ padding:"10px 14px", fontSize:13, borderRadius:10,
-            border:"1px solid var(--popup-border)", background:"#fff", color:"var(--popup-text)" }} />
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-          {[["inicio","Data início"],["fim","Data fim"]].map(([k,l]) => (
-            <div key={k}>
-              <p style={{ fontSize:11, color:"var(--popup-muted)", marginBottom:4 }}>{l}</p>
-              <input type="date" value={v[k]} onChange={e => setV(x => ({...x,[k]:e.target.value}))}
-                style={{ padding:"8px", fontSize:13, borderRadius:10, width:"100%",
-                  border:"1px solid var(--popup-border)", background:"#fff", color:"var(--popup-text)" }} />
-            </div>
-          ))}
-        </div>
-        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
-          <button onClick={onPular} style={{ padding:"8px 16px", fontSize:13,
-            background:"transparent", border:"1px solid var(--popup-border)",
-            borderRadius:10, cursor:"pointer", color:"var(--popup-muted)" }}>
-            Não houve viagem
-          </button>
-          <button onClick={() => pronto && onSalvar(v)} disabled={!pronto} style={{
-            padding:"8px 20px", fontSize:13, fontWeight:500,
-            background: pronto ? "var(--primary)" : "#ccc",
-            color:"#fff", border:"none", borderRadius:10,
-            cursor: pronto ? "pointer" : "not-allowed" }}>
-            Salvar viagem →
-          </button>
-        </div>
-      </div>
-    </Popup>
-  )
-}
-
 // ── PRINCIPAL ──────────────────────────────────────────────────────────────
 export default function Revisao({ uploadData, onIncorporado }) {
   const [itens, setItens] = useState(uploadData?.itens || [])
   const [incorporando, setIncorporando] = useState(false)
   const [incorporadoInfo, setIncorporadoInfo] = useState(null)
   const [popup, setPopup] = useState(null)
+  const [ordem, setOrdem] = useState({ key: null, dir: "asc" })
+  const [editDesc, setEditDesc] = useState(null)     // { id, temp }
+  const [apelidoPend, setApelidoPend] = useState(null) // { id, real, antigo, novo }
+
+  // Colunas ordenáveis (mesma ideia de Lançamentos e do pop-up)
+  const COLS = [
+    { label: "Data", key: "data" },
+    { label: "Descrição", key: "descricao" },
+    { label: "Valor", key: "valor", align: "right" },
+    { label: "Categoria", key: "categoria" },
+    { label: "Conf.", key: "confianca" },
+    { label: "Arquivo", key: "arquivo" },
+    { label: "", key: null },
+  ]
+
+  function ordenarPor(key) {
+    if (!key) return
+    setOrdem(o => o.key === key ? { key, dir: o.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" })
+  }
+
+  function chaveOrd(item, key) {
+    switch (key) {
+      case "data": { const [d, m, y] = (item.data || "").split("/"); return Number(`${y || ""}${m || ""}${d || ""}`) || 0 }
+      case "valor": return item.valor ?? 0
+      default: return (item[key] || "").toString().toLowerCase()
+    }
+  }
+
+  const itensOrdenados = useMemo(() => {
+    if (!ordem.key) return itens
+    const arr = [...itens]
+    arr.sort((a, b) => {
+      const va = chaveOrd(a, ordem.key), vb = chaveOrd(b, ordem.key)
+      if (va < vb) return ordem.dir === "asc" ? -1 : 1
+      if (va > vb) return ordem.dir === "asc" ? 1 : -1
+      return 0
+    })
+    return arr
+  }, [itens, ordem])
 
   useEffect(() => {
     if (!uploadData) return
     const semCat = (uploadData.itens||[]).filter(i => !i.categoria)
-    setPopup(semCat.length > 0 ? 'categorias' : 'viagem')
+    setPopup(semCat.length > 0 ? 'categorias' : null)
   }, [uploadData])
 
   if (!uploadData) return (
@@ -183,13 +183,34 @@ export default function Revisao({ uploadData, onIncorporado }) {
 
   function handleCatsConfirmadas(cats) {
     setItens(its => its.map(i => { const n=cats.find(c=>c.id===i.id); return n ? {...i,categoria:n.categoria} : i }))
-    setPopup('viagem')
+    setPopup(null)
   }
 
-  async function handleViagemSalva(v) {
-    await fetch(`${API}/viagens`, { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ destino:v.destino, data_inicio:v.inicio, data_fim:v.fim }) })
-    setPopup(null)
+  // Renomear descrição na revisão (abre escolha: este vs base toda)
+  function abrirRenome(item) { setEditDesc({ id: item.id, temp: item.descricao }) }
+  function confirmarRenome() {
+    const item = itens.find(i => i.id === editDesc?.id)
+    const novo = (editDesc?.temp || "").trim()
+    if (item && novo && novo !== item.descricao) {
+      setApelidoPend({ id: item.id, real: item.descricao_real || item.descricao, antigo: item.descricao, novo })
+    }
+    setEditDesc(null)
+  }
+  function renomearSoEste() {
+    if (apelidoPend) setItens(its => its.map(i => i.id === apelidoPend.id ? { ...i, descricao: apelidoPend.novo } : i))
+    setApelidoPend(null)
+  }
+  async function renomearBaseToda() {
+    if (!apelidoPend) return
+    const { real, novo } = apelidoPend
+    try {
+      await fetch(`${API}/apelidos`, { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ descricao_real: real, apelido: novo, aplicar_base: true }) })
+    } catch (e) { console.error(e) }
+    // Atualiza localmente todos os itens com esse mesmo nome real
+    setItens(its => its.map(i => (i.descricao_real || i.descricao) === real
+      ? { ...i, descricao: novo, descricao_real: real } : i))
+    setApelidoPend(null)
   }
 
   async function incorporar() {
@@ -199,7 +220,7 @@ export default function Revisao({ uploadData, onIncorporado }) {
       const res = await fetch(`${API}/incorporar`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ upload_id: uploadData.upload_id,
-          itens: visiveis.map(i => ({id:i.id,categoria:i.categoria,excluir:false})) })
+          itens: visiveis.map(i => ({id:i.id,categoria:i.categoria,excluir:false,descricao:i.descricao})) })
       })
       const data = await res.json()
       window.dispatchEvent(new CustomEvent('gogo-trigger', { detail: 'incorporado' }))
@@ -250,8 +271,11 @@ export default function Revisao({ uploadData, onIncorporado }) {
 
       {popup==='categorias' && itensSemCat.length>0 &&
         <PopupCategorias itens={itensSemCat} onSalvar={handleCatsConfirmadas} />}
-      {popup==='viagem' &&
-        <PopupViagem onSalvar={handleViagemSalva} onPular={() => setPopup(null)} />}
+      {apelidoPend && (
+        <AliasModal pend={apelidoPend} podeBase={true}
+          onBaseToda={renomearBaseToda} onSoEste={renomearSoEste}
+          onClose={() => setApelidoPend(null)} />
+      )}
 
       {/* Resumo */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:10 }}>
@@ -293,13 +317,23 @@ export default function Revisao({ uploadData, onIncorporado }) {
         <div style={{ display:"grid", gridTemplateColumns:"90px 1fr 90px 110px 80px 70px 32px",
           gap:8, padding:"10px 14px", background:"var(--surface2)",
           borderBottom:`1px solid var(--border)` }}>
-          {["Data","Descrição","Valor","Categoria","Conf.","Arquivo",""].map(h => (
-            <p key={h} style={{ fontSize:10, fontWeight:500, color:"var(--text-faint)",
-              textTransform:"uppercase", letterSpacing:"0.05em" }}>{h}</p>
-          ))}
+          {COLS.map((c, i) => {
+            const ativo = ordem.key === c.key && c.key
+            return (
+              <p key={i} onClick={() => ordenarPor(c.key)}
+                title={c.key ? "Clique para ordenar" : undefined}
+                style={{ fontSize:10, fontWeight:500,
+                  color: ativo ? "var(--primary)" : "var(--text-faint)",
+                  textTransform:"uppercase", letterSpacing:"0.05em",
+                  textAlign: c.align === "right" ? "right" : "left",
+                  cursor: c.key ? "pointer" : "default", userSelect:"none" }}>
+                {c.label}{ativo ? (ordem.dir === "asc" ? " ▲" : " ▼") : ""}
+              </p>
+            )
+          })}
         </div>
         <div style={{ maxHeight:"58vh", overflowY:"auto" }}>
-          {itens.map(item => {
+          {itensOrdenados.map(item => {
             const conf = CONF[item.confianca] || CONF.vermelho
             const arq  = ARQ[item.arquivo]   || null
             const isExc = item.excluir
@@ -312,10 +346,26 @@ export default function Revisao({ uploadData, onIncorporado }) {
                   ? "rgba(226,75,74,0.05)" : "transparent"
               }}>
                 <p style={{ fontSize:11, color:"var(--text-muted)" }}>{item.data}</p>
-                <p style={{ fontSize:12, fontWeight:500, color:"var(--text)",
-                  whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-                  {item.descricao}
-                </p>
+                {editDesc && editDesc.id === item.id ? (
+                  <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+                    <input autoFocus value={editDesc.temp}
+                      onChange={e => setEditDesc(d => ({ ...d, temp: e.target.value }))}
+                      onKeyDown={e => { if (e.key==="Enter") confirmarRenome(); if (e.key==="Escape") setEditDesc(null) }}
+                      style={{ fontSize:11, padding:"3px 6px", width:150, background:"var(--surface)",
+                        border:"1px solid var(--primary)", borderRadius:6, color:"var(--text)", outline:"none" }} />
+                    <button onClick={confirmarRenome} style={{ fontSize:11, padding:"3px 7px", cursor:"pointer", background:"var(--primary)", color:"#fff", border:"none", borderRadius:6 }}>OK</button>
+                    <button onClick={() => setEditDesc(null)} style={{ fontSize:11, padding:"3px 5px", cursor:"pointer", background:"none", color:"var(--text-muted)", border:"1px solid var(--border-mid)", borderRadius:6 }}>✕</button>
+                  </div>
+                ) : (
+                  <button disabled={isExc} onClick={() => !isExc && abrirRenome(item)} title="Clique para renomear"
+                    style={{ background:"none", border:"none", cursor: isExc?"default":"pointer", padding:0, color:"var(--text)", font:"inherit", display:"inline-flex", alignItems:"center", gap:4, maxWidth:"100%" }}>
+                    <span style={{ fontSize:12, fontWeight:500, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{item.descricao}</span>
+                    {item.descricao_real && item.descricao_real !== item.descricao && (
+                      <span style={{ fontSize:10, flexShrink:0 }} title={`veio como: ${item.descricao_real}`}>🏷️</span>
+                    )}
+                    {!isExc && <span style={{ fontSize:9, color:"var(--text-faint)", opacity:0.6, flexShrink:0 }}>✎</span>}
+                  </button>
+                )}
                 <p style={{ fontSize:12, textAlign:"right", fontWeight:500,
                   color: item.valor>0 ? "var(--primary)" : "var(--text)" }}>
                   R${Math.abs(item.valor).toLocaleString("pt-BR",{minimumFractionDigits:2})}

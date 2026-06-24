@@ -1,8 +1,10 @@
 import { useState, useRef } from "react"
+import ImportarPlanilha from "../components/ImportarPlanilha"
 
 const API = "http://127.0.0.1:8000"
 
 export default function Upload({ onUploadSuccess }) {
+  const [modo,     setModo]     = useState("pdf")   // "pdf" | "planilha"
   const [arquivos, setArquivos] = useState([])
   const [loading,  setLoading]  = useState(false)
   const [erro,     setErro]     = useState(null)
@@ -211,13 +213,32 @@ export default function Upload({ onUploadSuccess }) {
 
   // ── TELA PRINCIPAL ────────────────────────────────────────────────────────
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"1.5rem", maxWidth:640 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:"1.5rem", maxWidth:680 }}>
       <div>
         <h2 style={{ fontSize:20, fontWeight:600, color:"var(--text)", marginBottom:6 }}>Upload</h2>
         <p style={{ fontSize:13, color:"var(--text-muted)" }}>
-          Adicione um ou mais PDFs — extratos de débito e/ou faturas de crédito.
+          {modo === "pdf"
+            ? "Adicione um ou mais PDFs — extratos de débito e/ou faturas de crédito."
+            : "Importe sua base antiga a partir de uma planilha Excel."}
         </p>
       </div>
+
+      {/* Alternância PDF / Planilha */}
+      <div style={{ display:"flex", gap:6, background:"var(--surface2)", padding:4, borderRadius:"var(--radius-md)", alignSelf:"flex-start" }}>
+        {[["pdf","📄 PDF (extrato/fatura)"],["planilha","📊 Planilha (base antiga)"]].map(([val,label]) => (
+          <button key={val} onClick={() => setModo(val)} style={{
+            padding:"6px 14px", fontSize:13, cursor:"pointer", border:"none",
+            borderRadius:"var(--radius-sm)", fontWeight: modo===val ? 500 : 400,
+            background: modo===val ? "var(--surface)" : "transparent",
+            color: modo===val ? "var(--text)" : "var(--text-muted)",
+            boxShadow: modo===val ? "0 1px 3px rgba(0,0,0,0.12)" : "none"
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {modo === "planilha" && <ImportarPlanilha onUploadSuccess={onUploadSuccess} />}
+
+      {modo === "pdf" && <>
 
       {/* Drop zone */}
       <div
@@ -277,6 +298,8 @@ export default function Upload({ onUploadSuccess }) {
           {loading ? "Processando..." : arquivos.length ? `Processar ${arquivos.length} arquivo(s) →` : "Selecione arquivos"}
         </button>
       </div>
+
+      </>}
     </div>
   )
 }

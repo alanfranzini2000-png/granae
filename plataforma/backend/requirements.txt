@@ -4,3 +4,12 @@ pdfplumber==0.10.3
 python-multipart==0.0.9
 pydantic==2.6.0
 openpyxl==3.1.5
+python-dotenv
+
+# OCR para PDFs baseados em imagem (ex.: fatura XP). Além destes pacotes Python,
+# é necessário o binário do Tesseract OCR no sistema (Windows: instalador UB
+# Mannheim com idioma Português). Sem eles, PDFs com texto seguem funcionando;
+# só PDF-imagem exige o OCR.
+pymupdf
+pytesseract
+Pillow
