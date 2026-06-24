@@ -808,8 +808,11 @@ def listar_viagens():
         for l in lancamentos:
             cat = l['categoria'] or 'O'
             if cat not in ('SA','I','F'):
-                gastos_cat[cat] = gastos_cat.get(cat, 0) + abs(l['valor'])
-                total += abs(l['valor'])
+                # Gasto líquido: débito (valor<0) entra positivo; crédito/estorno
+                # (valor>0) ABATE o total. Antes usava abs() e o crédito somava.
+                gasto = -(l['valor'] or 0)
+                gastos_cat[cat] = gastos_cat.get(cat, 0) + gasto
+                total += gasto
         result.append({**dict(v), 'total': round(total,2), 'por_categoria': {k: round(v2,2) for k,v2 in gastos_cat.items()}, 'num_lancamentos': len(lancamentos)})
     conn.close()
     return result
