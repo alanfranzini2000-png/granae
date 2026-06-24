@@ -25,3 +25,6 @@ venv/
 *.db
 data/
 backups/
+
+# Dados de idioma do Tesseract (binario grande, local)
+*.traineddata

@@ -769,6 +769,24 @@ def _extrair_texto_ocr(pdf_bytes, senha=None):
         )
     pytesseract.pytesseract.tesseract_cmd = tess
 
+    # Idioma: prefere Português. Se houver um por.traineddata local (backend/
+    # tessdata/ — não precisa de admin), usa via --tessdata-dir. Senão, tenta o
+    # 'por' do sistema; se nem isso, cai para 'eng' (o conteúdo é quase todo
+    # numérico/ASCII, então o inglês ainda lê bem).
+    config = '--psm 6'
+    lang = 'por'
+    _local_tessdata = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tessdata')
+    if os.path.exists(os.path.join(_local_tessdata, 'por.traineddata')):
+        # TESSDATA_PREFIX é a forma robusta de apontar a pasta (o --tessdata-dir
+        # via config-string do pytesseract quebra com barras/aspas no Windows).
+        os.environ['TESSDATA_PREFIX'] = _local_tessdata
+    else:
+        try:
+            if 'por' not in set(pytesseract.get_languages(config='')):
+                lang = 'eng'
+        except Exception:
+            pass
+
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     if senha:
         doc.authenticate(str(senha))
@@ -777,7 +795,7 @@ def _extrair_texto_ocr(pdf_bytes, senha=None):
     for page in doc:
         pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))   # 3x zoom ~216 DPI
         img = Image.open(io.BytesIO(pix.tobytes("png")))
-        texto += pytesseract.image_to_string(img, lang='por', config='--psm 6') + "\n"
+        texto += pytesseract.image_to_string(img, lang=lang, config=config) + "\n"
     return texto
 
 
