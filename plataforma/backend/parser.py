@@ -142,6 +142,42 @@ def _detectar_tipo_rapido(texto):
     return None
 
 
+# ── CATÁLOGO DE BANCOS ────────────────────────────────────────────────────
+# Identifica o banco/layout por palavras-chave no cabeçalho e diz como extrair:
+#   'regex'      → parser por posição (Santander débito), sem custo de IA
+#   'ia_texto'   → janela + IA (faturas de crédito com texto)
+#   'ocr_regex'  → PDF-imagem: OCR + parser dedicado (XP)
+# Bancos novos sem entrada aqui caem na IA genérica (também ótima).
+_CATALOGO_BANCOS = {
+    'santander_debito': {
+        'detectar': ['EXTRATO DE CONTA CORRENTE'],
+        'extracao': 'regex', 'pdf_tipo': 'texto', 'tipo_lancamento': 'debito',
+    },
+    'santander_credito': {
+        'detectar': ['SANTANDER ELITE', 'DETALHAMENTO DA FATURA'],
+        'extracao': 'ia_texto', 'pdf_tipo': 'texto', 'tipo_lancamento': 'credito',
+    },
+    'nubank': {
+        'detectar': ['NU PAGAMENTOS', 'TRANSAÇÕES DE'],
+        'extracao': 'ia_texto', 'pdf_tipo': 'texto', 'tipo_lancamento': 'credito',
+    },
+    'xp': {
+        'detectar': ['BANCO XP', 'XP VISA', 'CARTÃO XP', 'CARTAO XP', 'XP INVESTIMENTOS'],
+        'extracao': 'ocr_regex', 'pdf_tipo': 'imagem', 'tipo_lancamento': 'credito',
+    },
+}
+
+
+def _detectar_banco(texto):
+    """Retorna a chave do banco no catálogo cujas palavras-chave aparecem no
+    cabeçalho; None se nenhuma casar (→ IA genérica)."""
+    t = (texto or "")[:3000].upper()
+    for banco, cfg in _CATALOGO_BANCOS.items():
+        if any(kw.upper() in t for kw in cfg['detectar']):
+            return banco
+    return None
+
+
 # Marcadores por tipo: lista de (padrão_início, padrão_fim).
 # Para cada tipo, tenta os padrões em ordem; usa o primeiro que casar.
 # padrão_fim=None significa "até o fim do documento".
@@ -683,6 +719,121 @@ def _reconstruir_linhas_pdfplumber(pdf_bytes, senha=None):
         return None
 
 
+# ── OCR (PDFs baseados em imagem, ex.: XP) ────────────────────────────────
+
+_TESSERACT_CANDIDATOS = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe",
+    "/usr/bin/tesseract", "/usr/local/bin/tesseract",
+]
+
+
+def _achar_tesseract():
+    """Localiza o binário do Tesseract (PATH, env TESSERACT_PATH ou locais conhecidos)."""
+    achado = shutil.which("tesseract") or os.environ.get("TESSERACT_PATH")
+    if achado and os.path.exists(achado):
+        return achado
+    for c in _TESSERACT_CANDIDATOS:
+        c = os.path.expandvars(c)
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _extrair_texto_ocr(pdf_bytes, senha=None):
+    """Extrai texto de PDF-imagem via OCR (PyMuPDF renderiza + Tesseract lê).
+
+    Degrada com clareza: se faltarem as libs Python ou o binário do Tesseract,
+    levanta um erro acionável (em vez de quebrar genericamente). Assim os PDFs
+    com texto continuam 100%, e só o caso de imagem (XP) exige o OCR instalado.
+    """
+    try:
+        import fitz                       # PyMuPDF
+        import pytesseract
+        from PIL import Image
+    except ImportError as e:
+        raise RuntimeError(
+            "Este PDF parece ser baseado em imagem (sem texto extraível) e precisa "
+            "de OCR. Instale as dependências no backend: "
+            "pip install pymupdf pytesseract Pillow. "
+            f"(faltando: {e})"
+        )
+
+    tess = _achar_tesseract()
+    if not tess:
+        raise RuntimeError(
+            "PDF baseado em imagem: é necessário o Tesseract OCR instalado. No Windows, "
+            "baixe o instalador (UB Mannheim) incluindo o idioma Português, ou aponte a "
+            "variável de ambiente TESSERACT_PATH para o tesseract.exe."
+        )
+    pytesseract.pytesseract.tesseract_cmd = tess
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    if senha:
+        doc.authenticate(str(senha))
+
+    texto = ""
+    for page in doc:
+        pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))   # 3x zoom ~216 DPI
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        texto += pytesseract.image_to_string(img, lang='por', config='--psm 6') + "\n"
+    return texto
+
+
+def parse_fatura_xp(texto_ocr):
+    """Parser dedicado à fatura XP (PDF-imagem) já passada por OCR.
+
+    Formato: DD/MM/YY  Descrição  R$  [US$]. No texto o valor de saída é
+    POSITIVO (vira negativo aqui); entradas vêm com '-' explícito (viram +).
+    """
+    ignorar_kw = {
+        'subtotal', 'pagamento de fatura', 'pagamentos/créditos', 'pagamentos / créditos',
+        'saldo financiado', 'saldo credor', 'despesas até', 'total da fatura',
+        'valor total devido', 'fatura fechada', 'próximo fechamento', 'melhor dia',
+        'resumo da sua', 'limite total', 'limite utilizado', 'as informações',
+        'data', 'descrição', 'lançamentos',
+    }
+    # O valor casa tanto o formato normal (1.234,56) quanto um valor "grudado"
+    # pelo OCR (ex.: 16910 = 169,10), corrigido logo abaixo.
+    PAT = re.compile(
+        r'^(\d{2}/\d{2}/\d{2})\s+'
+        r'(.+?)\s+'
+        r'(-?(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d{3,}))\s*'
+        r'(?:-?(?:\d+[.,]\d{2}|\d{3,}))?\s*$'
+    )
+    lancamentos = []
+    for linha in texto_ocr.split('\n'):
+        ls = linha.strip()
+        if not ls or any(ig in ls.lower() for ig in ignorar_kw):
+            continue
+        m = PAT.match(ls)
+        if not m:
+            continue
+        data_str, desc, valor_str = m.group(1), m.group(2).strip(), m.group(3)
+        # Correção de OCR: valor "16910" → "169,10"
+        if ',' not in valor_str and '.' not in valor_str:
+            valor_str = re.sub(r'(\d+)(\d{2})$', r'\1,\2', valor_str)
+        desc = re.sub(r'\s*-\s*Parcela\s+\d+/\d+', '', desc, flags=re.IGNORECASE).strip()
+        try:
+            d = datetime.strptime(data_str, '%d/%m/%y')
+        except ValueError:
+            continue
+        try:
+            v_num = float(valor_str.replace('.', '').replace(',', '.'))
+        except ValueError:
+            continue
+        valor = abs(v_num) if valor_str.startswith('-') else -v_num
+        lancamentos.append({
+            'mes':       f"{d.month}/{d.year}",
+            'data':      d.strftime('%d/%m/%Y'),
+            'descricao': desc,
+            'valor':     round(valor, 2),
+            'tipo':      'Crédito',
+        })
+    return lancamentos
+
+
 def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
     """
     Função principal chamada pelo main.py.
@@ -697,18 +848,21 @@ def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
          • system prompt com cache_control reduz custo das chamadas repetidas
       5. Sem chave de API → fallback por regex best-effort
     """
+    # ── Passo 1: extrai texto; se vier vazio é PDF-imagem → OCR ───────────
     texto = extrair_texto_pdf(pdf_bytes, senha)
+    if not texto or len(texto.strip()) < 40:
+        texto = _extrair_texto_ocr(pdf_bytes, senha)   # erro acionável se faltar OCR
 
-    # ── Detecta tipo por palavras-chave (gratuito) ────────────────────────
-    tipo_rapido = _detectar_tipo_rapido(texto)
+    # ── Passo 2: detecta o banco/layout pelo cabeçalho (grátis) ───────────
+    banco = _detectar_banco(texto)
+    cfg = _CATALOGO_BANCOS.get(banco, {})
+    tipo_lancamento = cfg.get('tipo_lancamento') or _detectar_tipo_rapido(texto) or 'credito'
 
-    # ── Débito Santander: reconstrói as linhas por POSIÇÃO e usa o regex ──
-    # O pdftotext -layout embaralha as colunas deste extrato (crédito/débito/
-    # saldo caem em linhas trocadas). Reconstruindo as linhas pela coordenada Y
-    # das palavras (pdfplumber), as colunas voltam a alinhar e o regex por ordem
-    # de coluna acerta 100% — sem gastar API. Se não capturar nada (layout
-    # diferente), cai para a IA abaixo.
-    if tipo_rapido == 'debito':
+    # ── Passo 3a: Santander Débito → reconstrução por coordenada + regex ──
+    # O pdftotext -layout embaralha as colunas; reconstruindo pela coordenada Y
+    # (pdfplumber) o regex por posição acerta 100% — sem custo de API. Cobre tb
+    # o débito identificado só pelo tipo (sem banco no catálogo).
+    if banco == 'santander_debito' or (banco is None and tipo_lancamento == 'debito'):
         for candidato in (_reconstruir_linhas_pdfplumber(pdf_bytes, senha), texto):
             if not candidato:
                 continue
@@ -716,11 +870,16 @@ def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
             if lancs_regex:
                 return 'debito', lancs_regex
 
-    # ── Para todo o resto: pré-filtro + IA ───────────────────────────────
+    # ── Passo 3b: XP (PDF-imagem) → parser dedicado pós-OCR ───────────────
+    if banco == 'xp':
+        lancs_xp = parse_fatura_xp(texto)
+        if lancs_xp:
+            return 'credito', lancs_xp
+        # senão, cai para a IA abaixo (ela tolera melhor o ruído do OCR)
+
+    # ── Passo 3c: todo o resto → pré-filtro de janela + IA ────────────────
     if ANTHROPIC_API_KEY:
-        # Corta o texto para a janela de lançamentos antes de enviar à IA
-        tipo_para_filtro = tipo_rapido or 'credito'
-        texto_filtrado = _extrair_janela(texto, tipo_para_filtro)
+        texto_filtrado = _extrair_janela(texto, tipo_lancamento)
         # Ano vem do texto COMPLETO: a janela pode ter cortado o cabeçalho com o
         # vencimento (ex.: Santander Elite), e sem isso a IA chuta o ano.
         ano_ref = _ano_referencia(texto)
@@ -737,15 +896,6 @@ def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
         raise RuntimeError(f"Falha ao extrair lançamentos via IA: {ultimo_erro}")
 
     # ── Sem chave de API → fallback por regex (best-effort) ───────────────
-    layout = detectar_layout(texto)
-    tipo = _resolver_tipo(layout, texto)
-
-    if tipo == 'debito':
-        lancamentos = parse_extrato_debito(texto)
-    elif tipo == 'credito':
-        lancamentos = parse_fatura_credito(texto)
-    else:
-        raise ValueError("Não foi possível identificar o tipo do arquivo PDF "
-                         "(esperado extrato de débito ou fatura de crédito).")
-
-    return tipo, lancamentos
+    if tipo_lancamento == 'debito':
+        return 'debito', parse_extrato_debito(texto)
+    return 'credito', parse_fatura_credito(texto)
