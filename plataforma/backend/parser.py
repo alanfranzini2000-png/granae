@@ -799,6 +799,32 @@ def _extrair_texto_ocr(pdf_bytes, senha=None):
     return texto
 
 
+def _valor_br(s):
+    """Converte um valor monetário BR para float, tolerante a variações do OCR.
+
+    O ÚLTIMO separador (',' ou '.') é o decimal; os anteriores são de milhar e
+    são removidos. Cobre '1.051,79', '1,051,79', '601,80'. Sem separador, o OCR
+    grudou os centavos (ex.: '16910' = 169,10) → divide por 100.
+    Mantém o sinal ('-99,99' → -99.99). Retorna None se não for número.
+    """
+    s = (s or "").strip()
+    neg = s.startswith('-')
+    s = s.lstrip('-').strip()
+    m = re.search(r'[.,](\d{2})$', s)
+    try:
+        if m:
+            inteiro = re.sub(r'\D', '', s[:m.start()]) or '0'
+            val = float(f"{inteiro}.{m.group(1)}")
+        else:
+            digitos = re.sub(r'\D', '', s)
+            if not digitos:
+                return None
+            val = float(digitos) / 100        # centavos grudados pelo OCR
+    except ValueError:
+        return None
+    return -val if neg else val
+
+
 def parse_fatura_xp(texto_ocr):
     """Parser dedicado à fatura XP (PDF-imagem) já passada por OCR.
 
@@ -829,19 +855,17 @@ def parse_fatura_xp(texto_ocr):
         if not m:
             continue
         data_str, desc, valor_str = m.group(1), m.group(2).strip(), m.group(3)
-        # Correção de OCR: valor "16910" → "169,10"
-        if ',' not in valor_str and '.' not in valor_str:
-            valor_str = re.sub(r'(\d+)(\d{2})$', r'\1,\2', valor_str)
         desc = re.sub(r'\s*-\s*Parcela\s+\d+/\d+', '', desc, flags=re.IGNORECASE).strip()
         try:
             d = datetime.strptime(data_str, '%d/%m/%y')
         except ValueError:
             continue
-        try:
-            v_num = float(valor_str.replace('.', '').replace(',', '.'))
-        except ValueError:
+        v = _valor_br(valor_str)
+        if v is None:
             continue
-        valor = abs(v_num) if valor_str.startswith('-') else -v_num
+        # No texto XP a saída é POSITIVA (vira negativa); estorno vem com '-'
+        # (vira positiva).
+        valor = -v
         lancamentos.append({
             'mes':       f"{d.month}/{d.year}",
             'data':      d.strftime('%d/%m/%Y'),
