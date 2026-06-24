@@ -17,8 +17,8 @@ from database import (
     buscar_apelido,
 )
 from categorizer import (
-    categorizar, categorizar_por_regra, limpar_desc, eh_fatura, eh_imune_viagem,
-    ANTHROPIC_API_KEY, CATEGORIAS_VALIDAS, KEYWORDS, ORDEM,
+    categorizar, categorizar_lote, categorizar_por_regra, limpar_desc, eh_fatura,
+    eh_imune_viagem, ANTHROPIC_API_KEY, CATEGORIAS_VALIDAS, KEYWORDS, ORDEM,
 )
 from parser import processar_pdf, pdf_esta_encriptado
 from planilha import ler_previa, categorias_distintas, parse_planilha
@@ -113,10 +113,10 @@ def _processar_arquivo(conteudo, nome_arquivo, conn, upload_id, senha=None):
         apelido = buscar_apelido(conn, desc_real)   # nome fantasia (se houver)
         itens.append({'l': l, 'is_pix': is_pix, 'desc_real': desc_real, 'desc': apelido or desc_real})
 
-    # 2) Categoriza com DEDUPLICAÇÃO + PARALELISMO. Cada descrição única vai 1x à
-    #    IA (não uma vez por ocorrência), e as chamadas rodam concorrentes — o que
-    #    era O(n) chamadas sequenciais vira ~O(únicos/8). Chave inclui o "PIX
-    #    pequeno (≤100)" porque essa faixa muda a categoria de PIX p/ pessoa.
+    # 2) Categoriza com DEDUPLICAÇÃO + chamada em LOTE. Cada descrição única vai
+    #    1x à IA (não uma por ocorrência) e TODAS as descrições sem regra vão numa
+    #    ÚNICA chamada à IA — o que era O(n) chamadas sequenciais vira ~1. Chave
+    #    inclui o "PIX pequeno (≤100)" porque essa faixa muda a categoria de PIX.
     def _chave(it):
         pix_pequeno = it['is_pix'] and abs(it['l']['valor']) <= 100
         return (it['desc_real'].upper(), it['l']['tipo'], it['is_pix'], pix_pequeno)
@@ -125,15 +125,10 @@ def _processar_arquivo(conteudo, nome_arquivo, conn, upload_id, senha=None):
     for it in itens:
         unicos.setdefault(_chave(it), it)
 
-    def _cat(it):
-        return categorizar(it['desc_real'], it['l']['valor'], it['l']['tipo'],
-                           usar_ia=True, is_pix=it['is_pix'], regras_usuario=regras_usuario)
-
-    cache = {}
-    if unicos:
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            for k, res in zip(unicos.keys(), ex.map(_cat, unicos.values())):
-                cache[k] = res
+    lote = [{'descricao': it['desc_real'], 'valor': it['l']['valor'],
+             'tipo': it['l']['tipo'], 'is_pix': it['is_pix']} for it in unicos.values()]
+    resultados = categorizar_lote(lote, regras_usuario=regras_usuario)
+    cache = {k: res for k, res in zip(unicos.keys(), resultados)}
 
     # 3) Monta o staging usando o resultado em cache.
     staging = []

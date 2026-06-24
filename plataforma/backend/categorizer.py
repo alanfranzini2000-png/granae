@@ -146,10 +146,9 @@ def categorizar_por_regra(descricao, regras_usuario=None):
 
 # ── CATEGORIZAÇÃO POR IA ──────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = (
-    "Você categoriza lançamentos bancários de um brasileiro que mora em São Paulo. "
-    "Responda APENAS com um JSON válido, sem nenhum texto fora dele, no formato: "
-    "{\"categoria\":\"CODIGO\",\"confianca\":\"alta|media|baixa\"}.\n"
+# Corpo com as definições de categoria — compartilhado pelo prompt unitário e
+# pelo prompt em lote (evita divergência entre os dois).
+_REGRAS_CAT = (
     "O nome do estabelecimento já vem sem o prefixo da maquininha (Pg*, Mp*, Dl*, "
     "Ifd*, Zig*); use o nome restante como pista do tipo de comércio.\n"
     "Códigos de categoria válidos:\n"
@@ -177,6 +176,24 @@ _SYSTEM_PROMPT = (
     "Mas se for nome de pessoa e o valor passar de R$100, devolva null para o usuário decidir. "
     "É melhor devolver null e deixar o usuário cadastrar manualmente do que arriscar uma categoria errada. "
     "Use \"baixa\" apenas quando tiver um palpite real; use null quando não tiver palpite nenhum."
+)
+
+_SYSTEM_PROMPT = (
+    "Você categoriza lançamentos bancários de um brasileiro que mora em São Paulo. "
+    "Responda APENAS com um JSON válido, sem nenhum texto fora dele, no formato: "
+    "{\"categoria\":\"CODIGO\",\"confianca\":\"alta|media|baixa\"}.\n"
+    + _REGRAS_CAT
+)
+
+# Prompt para categorizar VÁRIOS lançamentos numa única chamada (lote).
+_SYSTEM_PROMPT_LOTE = (
+    "Você categoriza lançamentos bancários de um brasileiro que mora em São Paulo. "
+    "Você recebe uma lista numerada de lançamentos e responde APENAS com um array "
+    "JSON, sem nenhum texto fora dele, um objeto por lançamento, na MESMA ORDEM e "
+    "com o MESMO tamanho da lista, no formato: "
+    "[{\"i\":0,\"categoria\":\"CODIGO_ou_null\",\"confianca\":\"alta|media|baixa|inconclusivo\"}, ...]. "
+    "O campo \"i\" é o número do lançamento na lista.\n"
+    + _REGRAS_CAT
 )
 
 def categorizar_por_ia(descricao, valor, tipo):
@@ -226,6 +243,103 @@ def categorizar_por_ia(descricao, valor, tipo):
 
     except Exception:
         return None, 'erro'
+
+
+def categorizar_por_ia_lote(itens):
+    """Categoriza N lançamentos em UMA chamada à IA (em vez de N chamadas).
+
+    itens: lista de dicts {descricao, valor, tipo}.
+    Retorna lista de (categoria, confianca) ALINHADA com 'itens'. Em erro,
+    devolve (None, 'erro') para todos — o chamador trata como vermelho.
+    """
+    if not itens:
+        return []
+
+    linhas = "\n".join(
+        f"{i}. {it.get('descricao','')} | R${abs(it.get('valor',0) or 0):.2f} ({it.get('tipo','Débito')})"
+        for i, it in enumerate(itens)
+    )
+    try:
+        payload = json.dumps({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": min(40 * len(itens) + 300, 16000),
+            "system": _SYSTEM_PROMPT_LOTE,
+            "messages": [{"role": "user", "content": linhas}],
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        texto = re.sub(r'```json|```', '', data['content'][0]['text']).strip()
+        arr = json.loads(texto)
+
+        # Mapeia por índice 'i' (robusto a reordenação/omissões da IA)
+        por_i = {}
+        for obj in arr if isinstance(arr, list) else []:
+            try:
+                idx = int(obj.get('i'))
+            except (TypeError, ValueError):
+                continue
+            cat_raw = obj.get('categoria')
+            conf = (obj.get('confianca') or 'baixa').strip().lower()
+            cat = cat_raw.strip().upper() if isinstance(cat_raw, str) else None
+            if cat not in CATEGORIAS_VALIDAS:
+                cat = None
+            por_i[idx] = (cat, conf)
+        return [por_i.get(i, (None, 'erro')) for i in range(len(itens))]
+
+    except Exception:
+        return [(None, 'erro')] * len(itens)
+
+
+def categorizar_lote(itens, regras_usuario=None, usar_ia=True):
+    """Categoriza uma lista de lançamentos com UMA chamada de IA em lote.
+
+    itens: lista de dicts {descricao, valor, tipo, is_pix}.
+    Retorna lista de (categoria, confianca, fonte) alinhada — mesma semântica de
+    `categorizar`. Primeiro aplica as regras (grátis) e só manda à IA, em lote,
+    os que ficaram 'sem_regra'.
+    """
+    resultados = [None] * len(itens)
+    para_ia = []   # [(idx, item)]
+
+    for i, it in enumerate(itens):
+        cat, status = categorizar_por_regra(it.get('descricao', ''), regras_usuario)
+        if status == 'regra':
+            resultados[i] = (cat, 'verde', 'regra')
+        elif status == 'perguntar':
+            resultados[i] = (None, 'vermelho', None)
+        else:
+            para_ia.append((i, it))
+
+    if para_ia and usar_ia and ANTHROPIC_API_KEY:
+        preds = categorizar_por_ia_lote([it for _, it in para_ia])
+        for (i, it), (cat_ia, confianca) in zip(para_ia, preds):
+            if cat_ia is None:
+                resultados[i] = (None, 'vermelho', 'ia')
+            elif confianca == 'alta':
+                resultados[i] = (cat_ia, 'verde', 'ia')
+            else:
+                resultados[i] = (cat_ia, 'amarelo', 'ia')
+    else:
+        # Sem IA: PIX pequeno p/ pessoa vira L; o resto, vermelho.
+        for i, it in para_ia:
+            if it.get('is_pix') and abs(it.get('valor', 0) or 0) <= PIX_VALOR_PEQUENO:
+                resultados[i] = ('L', 'amarelo', 'pix')
+            else:
+                resultados[i] = (None, 'vermelho', None)
+
+    return resultados
 
 
 # ── FUNÇÃO PRINCIPAL ──────────────────────────────────────────────────────
