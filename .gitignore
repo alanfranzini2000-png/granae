@@ -36,3 +36,6 @@ desktop/node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/binaries/*.exe
 backend/build_nuitka/
+
+# Os scripts de build do projeto NAO sao artefato (a regra build/ acima pegava)
+!plataforma/build/
