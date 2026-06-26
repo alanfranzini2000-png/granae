@@ -28,3 +28,11 @@ backups/
 
 # Dados de idioma do Tesseract (binario grande, local)
 *.traineddata
+
+# Artefatos de build da distribuicao
+dist_portatil/
+frontend/dist/
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/*.exe
+backend/build_nuitka/

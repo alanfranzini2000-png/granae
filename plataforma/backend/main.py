@@ -5,7 +5,8 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -16,9 +17,10 @@ from database import (
     listar_usuarios, criar_usuario, apagar_usuario, zerar_usuario,
     buscar_apelido,
 )
+import config as _config
 from categorizer import (
     categorizar, categorizar_lote, categorizar_por_regra, limpar_desc, eh_fatura,
-    eh_imune_viagem, ANTHROPIC_API_KEY, CATEGORIAS_VALIDAS, KEYWORDS, ORDEM,
+    eh_imune_viagem, CATEGORIAS_VALIDAS, KEYWORDS, ORDEM,
 )
 from parser import processar_pdf, pdf_esta_encriptado
 from planilha import ler_previa, categorias_distintas, parse_planilha
@@ -1061,7 +1063,7 @@ def avaliar_previa(limite_ia: Optional[int] = None, seed: Optional[int] = None):
         'total_geral': total_geral,
         'vai_ia': vai_ia,
         'vai_ia_efetivo': vai_ia,
-        'ia_disponivel': bool(ANTHROPIC_API_KEY),
+        'ia_disponivel': _config.tem_api_key(),
     }
 
 
@@ -1203,7 +1205,7 @@ def avaliar_modelo(usar_ia: bool = False, limite_ia: Optional[int] = None, seed:
             'por_fonte': por_fonte, 'top_confusoes': top_confusoes,
             'erros_amostra': erros_lista[:30],
             'ia_lancamentos': ia_lista,
-            'usar_ia': usar_ia, 'ia_disponivel': bool(ANTHROPIC_API_KEY),
+            'usar_ia': usar_ia, 'ia_disponivel': _config.tem_api_key(),
         }
         yield f"data: {json.dumps(resultado)}\n\n"
 
@@ -1224,12 +1226,43 @@ def diag():
     """
     import parser as _parser
     return {
-        "api_key_present": bool(ANTHROPIC_API_KEY),       # de categorizer
-        "parser_api_key_present": bool(_parser.ANTHROPIC_API_KEY),
+        "api_key_present": _config.tem_api_key(),
+        "api_key_fonte": _config.fonte_api_key(),   # 'local' | 'ambiente' | None
+        "parser_api_key_present": bool(_parser._api_key()),
         "pdftotext": _parser._achar_pdftotext() or None,
-        "extraction_mode": "ia" if _parser.ANTHROPIC_API_KEY else "regex",
+        "extraction_mode": "ia" if _parser._api_key() else "regex",
         "tem_extrair_lancamentos_ia": hasattr(_parser, "extrair_lancamentos_ia"),
     }
+
+
+# ── CONFIGURAÇÃO LOCAL (chave de API) ───────────────────────────────────────
+
+class ChaveApi(BaseModel):
+    chave: str
+
+
+@app.get("/config/api-key")
+def obter_status_api_key():
+    """Não retorna a chave em si — só se está configurada e de onde veio."""
+    return {
+        "configurada": _config.tem_api_key(),
+        "fonte": _config.fonte_api_key(),  # 'local' | 'ambiente' | None
+    }
+
+
+@app.post("/config/api-key")
+def definir_api_key(body: ChaveApi):
+    chave = (body.chave or "").strip()
+    if not chave:
+        raise HTTPException(400, "Chave vazia.")
+    _config.set_api_key(chave)
+    return {"ok": True, "configurada": True}
+
+
+@app.delete("/config/api-key")
+def remover_api_key():
+    _config.limpar_api_key()
+    return {"ok": True, "configurada": _config.tem_api_key()}
 
 
 # ── USUÁRIOS / BASES ──────────────────────────────────────────────────────
@@ -1274,8 +1307,36 @@ def post_zerar_usuario(nome: str):
     return {"ok": True}
 
 
-# ── ROOT ──────────────────────────────────────────────────────────────────
+# ── FRONTEND BUILDADO (modo app/portátil) ─────────────────────────────────
+# Quando existe o build do frontend (frontend/dist), o próprio backend o serve —
+# assim o pacote distribuído roda numa porta só (http://127.0.0.1:8000) sem o
+# Vite. Em desenvolvimento (sem dist) cai no JSON de status e o front roda no 5173.
+
+_DIST_CANDIDATOS = [
+    os.environ.get("GRANAE_FRONTEND_DIST", ""),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend_dist"),
+]
+_FRONTEND_DIST = next((p for p in _DIST_CANDIDATOS if p and os.path.isdir(p)), None)
+
+if _FRONTEND_DIST and os.path.isdir(os.path.join(_FRONTEND_DIST, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_FRONTEND_DIST, "assets")), name="assets")
+
 
 @app.get("/")
 def root():
-    return {"status": "ok", "app": "Finanças Pessoais"}
+    if _FRONTEND_DIST:
+        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
+    return {"status": "ok", "app": "Granaê"}
+
+
+# Catch-all do SPA — SERVE arquivos do dist ou cai no index.html. Precisa ser a
+# ÚLTIMA rota (as rotas de API acima têm prioridade no casamento).
+if _FRONTEND_DIST:
+    @app.get("/{full_path:path}")
+    def _spa(full_path: str):
+        candidato = os.path.join(_FRONTEND_DIST, full_path)
+        base = os.path.abspath(_FRONTEND_DIST)
+        if full_path and os.path.isfile(candidato) and os.path.abspath(candidato).startswith(base):
+            return FileResponse(candidato)
+        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))

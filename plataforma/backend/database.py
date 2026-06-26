@@ -4,10 +4,35 @@ import re
 import shutil
 from contextvars import ContextVar
 
+import config as _config
+
 BASE_DIR = os.path.dirname(__file__)
-DATA_DIR = os.path.join(BASE_DIR, "data")        # uma base .db por usuário
+# Dados ficam FORA da pasta de instalação (sobrevivem a updates/reinstalação e
+# não viajam junto com o pacote distribuído para outras pessoas).
+DATA_DIR = os.path.join(str(_config.APP_DATA_DIR), "data")  # uma base .db por usuário
 LEGACY_DB = os.path.join(BASE_DIR, "financas.db")  # base única antiga (pré-multiusuário)
+LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")   # pasta antiga (dentro do projeto)
 USUARIO_PADRAO = "principal"
+
+
+def _migrar_bases_legadas():
+    """Primeira execução após mover os dados para fora da pasta do projeto:
+    copia as bases antigas (backend/data/*.db) para a nova pasta, sem
+    sobrescrever nada que já exista no destino."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        if os.path.isdir(LEGACY_DATA_DIR):
+            for f in os.listdir(LEGACY_DATA_DIR):
+                if f.endswith(".db"):
+                    destino = os.path.join(DATA_DIR, f)
+                    origem = os.path.join(LEGACY_DATA_DIR, f)
+                    if not os.path.exists(destino):
+                        shutil.copy2(origem, destino)
+    except Exception:
+        pass
+
+
+_migrar_bases_legadas()
 
 # Usuário da requisição corrente (setado pelo middleware/dependency do main.py).
 _usuario_atual = ContextVar("usuario_atual", default=USUARIO_PADRAO)

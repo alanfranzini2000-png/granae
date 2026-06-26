@@ -6,6 +6,7 @@ import Lancamentos from "./pages/Lancamentos"
 import Avaliacao from "./pages/Avaliacao"
 import StatusBar from "./components/StatusBar"
 import UsuarioSelector from "./components/UsuarioSelector"
+import Configuracoes from "./components/Configuracoes"
 import GogoManager from "./components/Gogo"
 import { ModalDepurar, ModalVerificar, parseValorBR } from "./components/TabelaLancamentos"
 import { getUsuario, setUsuario, USUARIO_PADRAO } from "./usuario"
@@ -241,6 +242,7 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
           <StatusBar statusUploads={status} onStatusRefresh={fetchStatus} onVerificar={() => setVerificarAberto(true)} />
           <UsuarioSelector base={base} onTrocar={trocarBase} onRecarregar={recarregarTudo} />
+          <Configuracoes />
         </div>
       </div>
 

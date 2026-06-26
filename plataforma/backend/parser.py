@@ -9,7 +9,17 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+import config as _config
+
+
+def _api_key():
+    """Sempre lê a chave atual (config local > ambiente/.env)."""
+    return _config.get_api_key()
+
+
+# Mantido por compatibilidade (snapshot no import); para o valor sempre
+# atualizado (o que o app realmente usa), use _api_key().
+ANTHROPIC_API_KEY = _api_key()
 
 
 # ── EXTRAÇÃO DE TEXTO ─────────────────────────────────────────────────────
@@ -272,7 +282,7 @@ Retorne SOMENTE este JSON sem markdown:
             "https://api.anthropic.com/v1/messages",
             data=payload,
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": _api_key(),
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             },
@@ -459,7 +469,7 @@ def extrair_lancamentos_ia(texto, ano_ref=None):
         "https://api.anthropic.com/v1/messages",
         data=payload,
         headers={
-            "x-api-key": ANTHROPIC_API_KEY,
+            "x-api-key": _api_key(),
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
@@ -941,7 +951,7 @@ def processar_pdf(pdf_bytes, nome_arquivo="", senha=None):
             return 'credito', lancs_xp
 
     # ── Passo 3c: todo o resto → pré-filtro de janela + IA ────────────────
-    if ANTHROPIC_API_KEY:
+    if _api_key():
         texto_filtrado = _extrair_janela(texto, tipo_lancamento)
         # Ano vem do texto COMPLETO: a janela pode ter cortado o cabeçalho com o
         # vencimento (ex.: Santander Elite), e sem isso a IA chuta o ano.

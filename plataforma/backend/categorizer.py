@@ -4,7 +4,10 @@ import json
 import urllib.request
 from pathlib import Path
 
-# Carrega .env se existir (ANTHROPIC_API_KEY, etc.)
+import config as _config
+
+# Carrega .env se existir (uso em desenvolvimento — fallback se não houver
+# chave configurada localmente via tela de Configurações; ver config.py).
 _env_path = Path(__file__).parent / ".env"
 if _env_path.exists():
     with open(_env_path) as _f:
@@ -14,7 +17,17 @@ if _env_path.exists():
                 _k, _v = _line.split("=", 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+def _api_key():
+    """Sempre lê a chave atual (local > ambiente) — reflete mudanças feitas
+    na tela de Configurações sem precisar reiniciar o backend."""
+    return _config.get_api_key()
+
+
+# Mantido por compatibilidade com código que importa o nome direto (ex.:
+# test_ia.py) — é um SNAPSHOT do momento do import. Para o valor sempre
+# atualizado (o que o app realmente usa em cada chamada), use _api_key().
+ANTHROPIC_API_KEY = _api_key()
 
 # ── REGRAS FIXAS ─────────────────────────────────────────────────────────
 KEYWORDS = {
@@ -219,7 +232,7 @@ def categorizar_por_ia(descricao, valor, tipo):
             "https://api.anthropic.com/v1/messages",
             data=payload,
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": _api_key(),
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             },
@@ -271,7 +284,7 @@ def categorizar_por_ia_lote(itens):
             "https://api.anthropic.com/v1/messages",
             data=payload,
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": _api_key(),
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             },
@@ -322,7 +335,7 @@ def categorizar_lote(itens, regras_usuario=None, usar_ia=True):
         else:
             para_ia.append((i, it))
 
-    if para_ia and usar_ia and ANTHROPIC_API_KEY:
+    if para_ia and usar_ia and _api_key():
         preds = categorizar_por_ia_lote([it for _, it in para_ia])
         for (i, it), (cat_ia, confianca) in zip(para_ia, preds):
             if cat_ia is None:
@@ -373,7 +386,7 @@ def categorizar(descricao, valor=0, tipo="Débito", usar_ia=True, is_pix=False, 
 
     # 2. Sem regra fixa → tentar IA
     ia_tentou = False
-    if usar_ia and ANTHROPIC_API_KEY:
+    if usar_ia and _api_key():
         ia_tentou = True
         cat_ia, confianca = categorizar_por_ia(descricao, valor, tipo)
 
